@@ -4,7 +4,7 @@
 
 ## 概要(Overview) 
 
-Windows のコンソール画面でディレクトリの移動をカーソルの選択操作で行うコマンド。
+Windows のコンソール画面でディレクトリの移動をカーソルの選択操作で行うコマンド。  
 本プログラムは、Google Gemini に全て作らせました。
 
 ## デモ画面(Demo)
@@ -25,9 +25,9 @@ chd.bat、chds.exe をパスの通ったディレクトリに置く。
 
 ### Python
 ライブラリの導入  
-pip install windows-curses
+pip install windows-curses  
 
-chds.py は UTF-8 で保存。
+chds.py は UTF-8 で保存。  
 バッチファイルは、UTF-8 では無く、Shift-JIS(ANSI) で保存します。  
 chd.bat、chds.py をパスの通ったディレクトリに置く。  
 
