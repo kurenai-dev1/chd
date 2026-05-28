@@ -4,7 +4,7 @@
 #include <windows.h>
 
 #define MAX_DIR 512
-#define ITEM_WIDTH 24  // 1���ڂ�����̕��i20���� + �]��4�����j
+#define ITEM_WIDTH 24  // 1項目あたりの幅（20文字 + 余白4文字）
 
 typedef struct {
     char name[MAX_PATH];
@@ -16,6 +16,9 @@ int dir_count = 0;
 int current_selection = 0;
 int previous_selection = 0;
 int menu_start_row = 0;
+
+// スクロール管理用変数
+int scroll_top_row = 0; // 現在画面に表示されているリストの最上部行（0ベース）
 
 void print_to_console_w(const WCHAR* wstr, int max_width, int is_selected) {
     HANDLE hConsole = GetStdHandle(STD_ERROR_HANDLE);
@@ -43,6 +46,7 @@ void print_to_console_w(const WCHAR* wstr, int max_width, int is_selected) {
     free(mbuf);
 }
 
+// ★修正ポイント: 画面クリアと同時に、コンソールのウィンドウ表示位置を強制的に最上部に固定する
 void ClearWholeScreen() {
     HANDLE hConsole = GetStdHandle(STD_ERROR_HANDLE);
     COORD coordScreen = { 0, 0 };
@@ -51,12 +55,27 @@ void ClearWholeScreen() {
     DWORD dwConSize;
 
     if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) return;
+    
+    // 1. バッファ全体をスペースでクリア
     dwConSize = csbi.dwSize.X * csbi.dwSize.Y;
-
-    FillConsoleOutputCharacter(hConsole, (TCHAR)' ', dwConSize, coordScreen, &cCharsWritten);
-    GetConsoleScreenBufferInfo(hConsole, &csbi);
+    FillConsoleOutputCharacterW(hConsole, L' ', dwConSize, coordScreen, &cCharsWritten);
     FillConsoleOutputAttribute(hConsole, csbi.wAttributes, dwConSize, coordScreen, &cCharsWritten);
+    
+    // 2. カーソルを左上に戻す
     SetConsoleCursorPosition(hConsole, coordScreen);
+
+    // 3. ★ここが最重要：コンソールの表示ウィンドウの原点を強制的に (0, 0) にスクロールさせる
+    // これにより、ヘッダーが画面外（上部）に置いてきぼりになる現象を100%防ぎます
+    SMALL_RECT windowRect;
+    int windowWidth = csbi.srWindow.Right - csbi.srWindow.Left;
+    int windowHeight = csbi.srWindow.Bottom - csbi.srWindow.Top;
+    
+    windowRect.Left = 0;
+    windowRect.Top = 0;
+    windowRect.Right = windowWidth;
+    windowRect.Bottom = windowHeight;
+    
+    SetConsoleWindowInfo(hConsole, TRUE, &windowRect);
 }
 
 void truncate_name_w(const WCHAR* src, WCHAR* dest, int max_width) {
@@ -79,6 +98,7 @@ void register_directories(const char* target_to_focus) {
     dir_count = 0;
     current_selection = 0; 
     previous_selection = 0;
+    scroll_top_row = 0;
     
     strncpy(dirs[dir_count].name, ".", MAX_PATH);
     wcscpy(dirs[dir_count].display_name_w, L".");
@@ -115,6 +135,9 @@ void draw_single_item(int index, int is_selected) {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     GetConsoleScreenBufferInfo(hConsole, &csbi);
 
+    // 表示ウィンドウ自体の高さを基準にする
+    int visible_window_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+
     int console_width = csbi.dwSize.X;
     int cols = console_width / ITEM_WIDTH;
     if (cols < 1) cols = 1;
@@ -122,16 +145,45 @@ void draw_single_item(int index, int is_selected) {
     int item_row = index / cols;
     int item_col = index % cols;
 
+    int final_row = menu_start_row + (item_row - scroll_top_row);
+
+    // ウィンドウの最下行には絶対に描画しない（スクロール暴走防止マージン）
+    if (final_row < menu_start_row || final_row >= visible_window_height - 1) {
+        return;
+    }
+
     COORD target_pos;
     target_pos.X = item_col * ITEM_WIDTH;
-    target_pos.Y = menu_start_row + item_row;
+    target_pos.Y = final_row;
     SetConsoleCursorPosition(hConsole, target_pos);
 
     print_to_console_w(dirs[index].display_name_w, 20, is_selected);
 
-    // �J�[�\����I�����ڂ̐擪�i���[�j�Ńr�V�b�Ɠ_�ł����鏈��
     if (is_selected) {
         SetConsoleCursorPosition(hConsole, target_pos);
+    }
+}
+
+void clear_list_area() {
+    HANDLE hConsole = GetStdHandle(STD_ERROR_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) return;
+
+    int visible_window_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+
+    DWORD written;
+    COORD start_coord = {0, menu_start_row};
+    int total_chars = csbi.dwSize.X * (visible_window_height - 1 - menu_start_row);
+    if (total_chars < 0) total_chars = 0;
+
+    FillConsoleOutputCharacterW(hConsole, L' ', total_chars, start_coord, &written);
+    FillConsoleOutputAttribute(hConsole, csbi.wAttributes, total_chars, start_coord, &written);
+}
+
+void draw_list_only() {
+    clear_list_area();
+    for (int i = 0; i < dir_count; i++) {
+        draw_single_item(i, (i == current_selection));
     }
 }
 
@@ -142,17 +194,13 @@ void draw_full_menu() {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     GetConsoleScreenBufferInfo(hConsole, &csbi);
     
-    int console_width = csbi.dwSize.X;
-    int cols = console_width / ITEM_WIDTH;
-    if (cols < 1) cols = 1;
-
     WCHAR header[512];
     WCHAR current_path_w[MAX_PATH];
     GetCurrentDirectoryW(MAX_PATH, current_path_w);
     swprintf(header, 512, 
         L"==================================================\n"
-        L" ���݂̃p�X: %s\n"
-        L" [�e�t�H���_]: Enter�Œ���  [.]: Enter�ł������m��\n"
+        L" 現在のパス: %s\n"
+        L" [各フォルダ]: Enterで中へ  [.]: Enterでここを確定\n"
         L"==================================================\n", current_path_w);
     
     DWORD written;
@@ -161,19 +209,52 @@ void draw_full_menu() {
     GetConsoleScreenBufferInfo(hConsole, &csbi);
     menu_start_row = csbi.dwCursorPosition.Y;
 
-    // ��������ׂău���̂Ȃ����m�ȍ��W�w��Ŕz�u
-    for (int i = 0; i < dir_count; i++) {
-        draw_single_item(i, (i == current_selection));
+    int cols = csbi.dwSize.X / ITEM_WIDTH;
+    if (cols < 1) cols = 1;
+    
+    int visible_window_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    int visible_rows = visible_window_height - 1 - menu_start_row;
+    if (visible_rows < 1) visible_rows = 1;
+
+    int target_row = current_selection / cols;
+    if (target_row >= visible_rows) {
+        scroll_top_row = target_row - visible_rows + 1;
     }
 
-    // �����`�掞���J�[�\���ʒu��I�����ڂ̐擪�ɍ��킹��
-    draw_single_item(current_selection, 1);
+    draw_list_only();
 }
 
 void update_cursor_position() {
-    if (previous_selection == current_selection) return;
-    draw_single_item(previous_selection, 0);
-    draw_single_item(current_selection, 1);
+    HANDLE hConsole = GetStdHandle(STD_ERROR_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hConsole, &csbi);
+
+    int cols = csbi.dwSize.X / ITEM_WIDTH;
+    if (cols < 1) cols = 1;
+
+    int curr_row = current_selection / cols;
+    
+    int visible_window_height = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    int visible_rows = visible_window_height - 1 - menu_start_row;
+    if (visible_rows < 1) visible_rows = 1;
+
+    int need_refresh = 0;
+    if (curr_row < scroll_top_row) {
+        scroll_top_row = curr_row;
+        need_refresh = 1;
+    } else if (curr_row >= scroll_top_row + visible_rows) {
+        scroll_top_row = curr_row - visible_rows + 1;
+        need_refresh = 1;
+    }
+
+    if (need_refresh) {
+        draw_list_only();
+    } else {
+        if (previous_selection != current_selection) {
+            draw_single_item(previous_selection, 0);
+        }
+        draw_single_item(current_selection, 1);
+    }
     previous_selection = current_selection;
 }
 
