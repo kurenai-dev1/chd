@@ -1,25 +1,71 @@
 import os
 import sys
 import curses
+import unicodedata
 
 MAX_DIR = 512
 ITEM_WIDTH = 24  # 1項目あたりの幅
 
+def get_char_width(char):
+    """1文字の正確な表示幅を返す (全角=2, 半角=1)"""
+    status = unicodedata.east_asian_width(char)
+    if status in ('F', 'W', 'A'):
+        return 2
+    if len(char.encode('utf-8', errors='ignore')) > 1:
+        return 2
+    return 1
+
+def get_string_width(s):
+    """文字列全体の表示幅を計算する"""
+    return sum(get_char_width(char) for char in s)
+
+def truncate_string_by_width(s, max_width):
+    """指定された表示幅に収まるように文字列を切り詰める"""
+    cur_width = 0
+    res = []
+    for char in s:
+        w = get_char_width(char)
+        if cur_width + w > max_width:
+            break
+        res.append(char)
+        cur_width += w
+    return "".join(res)
+
+def add_str_with_width_fix(stdscr, y, x, text, max_width, attr=curses.A_NORMAL):
+    """Windows cursesの文字重なりを物理的に防止する描画関数"""
+    stdscr.move(y, x)
+    cur_x = x
+    
+    for char in text:
+        w = get_char_width(char)
+        if cur_x + w > x + max_width:
+            break
+            
+        try:
+            stdscr.addstr(y, cur_x, char, attr)
+            cur_x += w
+        except curses.error:
+            break
+
 def get_directories(target_to_focus=None):
-    """ディレクトリ一覧を取得し、初期の選択インデックスを返す"""
+    """★修正ポイント: 親ディレクトリ「..」の登録ロジックを復活"""
     dirs = ["."]
+    
+    # 現在のパスを取得
+    current_path = os.getcwd()
+    # ドライブのルート（例: C:\ や D:\）でなければ、".." をリストの2番目に追加
+    if os.path.dirname(current_path) != current_path:
+        dirs.append("..")
+        
     try:
-        # カレントディレクトリ内のフォルダを取得（隠し属性などは簡易的に除外）
         for entry in os.scandir("."):
             if entry.is_dir():
                 dirs.append(entry.name)
     except Exception:
         pass
     
-    # MAX_DIR制限
     dirs = dirs[:MAX_DIR]
     
-    # フォーカス対象のインデックスを探す
     current_selection = 0
     if target_to_focus and target_to_focus in dirs:
         current_selection = dirs.index(target_to_focus)
@@ -27,32 +73,41 @@ def get_directories(target_to_focus=None):
     return dirs, current_selection
 
 def draw_menu(stdscr, dirs, current_selection, scroll_top_row):
-    # 画面全体のサイズを取得
     screen_height, screen_width = stdscr.getmaxyx()
-    
-    # 画面を一度クリア
     stdscr.erase()
     
-    # 1. ヘッダー情報の描画（4行固定）
-    current_path = os.getcwd()
-    stdscr.addstr(0, 0, "=" * min(50, screen_width - 1))
-    stdscr.addstr(1, 0, f" 現在のパス: {current_path}"[:screen_width - 1])
-    stdscr.addstr(2, 0, " [各フォルダ]: Enterで中へ  [.]: Enterでここを確定"[:screen_width - 1])
-    stdscr.addstr(3, 0, "=" * min(50, screen_width - 1))
+    max_line_width = screen_width - 1
     
-    # ファイルリストの描画開始行
+    # 1. ヘッダー情報の描画
+    stdscr.addstr(0, 0, "=" * min(50, max_line_width))
+    
+    path_prefix = " 現在のパス: "
+    current_path = os.getcwd()
+    available_path_width = max_line_width - get_string_width(path_prefix)
+    truncated_path = truncate_string_by_width(current_path, available_path_width)
+    
+    stdscr.move(1, 0)
+    stdscr.clrtoeol()
+    add_str_with_width_fix(stdscr, 1, 0, f"{path_prefix}{truncated_path}", max_line_width)
+    
+    stdscr.move(2, 0)
+    stdscr.clrtoeol()
+    guide_text = " [各フォルダ]: Enterで中へ  [.]: Enterでここを確定"
+    add_str_with_width_fix(stdscr, 2, 0, truncate_string_by_width(guide_text, max_line_width), max_line_width)
+    
+    stdscr.addstr(3, 0, "=" * min(50, max_line_width))
+    
     menu_start_row = 4
     
-    # 2. リスト部分の描画計算
+    # 2. リスト部分の計算
     cols = screen_width // ITEM_WIDTH
     if cols < 1:
         cols = 1
         
-    visible_rows = screen_height - 1 - menu_start_row  # 最下行の1行手前まで
+    visible_rows = screen_height - 1 - menu_start_row
     if visible_rows < 1:
         visible_rows = 1
 
-    # スクロール位置の自動調整（はみ出したら追従）
     curr_row = current_selection // cols
     if curr_row < scroll_top_row:
         scroll_top_row = curr_row
@@ -64,31 +119,25 @@ def draw_menu(stdscr, dirs, current_selection, scroll_top_row):
         item_row = i // cols
         item_col = i % cols
         
-        # スクロール窓の範囲内にあるか判定
         final_row = menu_start_row + (item_row - scroll_top_row)
         if menu_start_row <= final_row < (screen_height - 1):
             x_pos = item_col * ITEM_WIDTH
             
-            # 表示名の切り詰め（全角半角混在は簡易的に文字数でカット）
-            display_name = dname[:20].ljust(20)
+            truncated_dname = truncate_string_by_width(dname, 20)
+            padding_len = 20 - get_string_width(truncated_dname)
+            display_name = f"{truncated_dname}{' ' * padding_len}"
+            
+            attr = curses.A_REVERSE if i == current_selection else curses.A_NORMAL
+            add_str_with_width_fix(stdscr, final_row, x_pos, display_name, 20, attr)
             
             if i == current_selection:
-                # 選択中のハイライト表示（反転）
-                stdscr.attron(curses.A_REVERSE)
-                stdscr.addstr(final_row, x_pos, display_name)
-                stdscr.attroff(curses.A_REVERSE)
-                # カーソルを選択中の先頭に配置して点滅させる
                 stdscr.move(final_row, x_pos)
-            else:
-                stdscr.addstr(final_row, x_pos, display_name)
                 
     stdscr.refresh()
     return scroll_top_row
 
 def main(stdscr):
-    # カーソルを表示する
     curses.curs_set(1)
-    # キー入力を即座に反映させる
     stdscr.keypad(True)
     curses.cbreak()
     
@@ -104,7 +153,6 @@ def main(stdscr):
         except KeyboardInterrupt:
             break
             
-        # 画面サイズを取得して列数を計算
         _, screen_width = stdscr.getmaxyx()
         cols = screen_width // ITEM_WIDTH
         if cols < 1:
@@ -126,7 +174,7 @@ def main(stdscr):
             if current_selection < len(dirs) - 1:
                 current_selection += 1
                 
-        elif key in (10, 13, curses.KEY_ENTER):  # Enterキー
+        elif key in (10, 13, curses.KEY_ENTER):
             if len(dirs) > 0:
                 sel_name = dirs[current_selection]
                 if sel_name == ".":
@@ -144,7 +192,7 @@ def main(stdscr):
                     except Exception:
                         pass
                         
-        elif key == curses.KEY_BACKSPACE or key == 8:  # Backspace
+        elif key == curses.KEY_BACKSPACE or key == 8:
             last_dir_name = os.path.basename(os.getcwd())
             try:
                 os.chdir("..")
@@ -153,18 +201,14 @@ def main(stdscr):
             except Exception:
                 pass
                 
-        elif key == 27:  # ESCキー
+        elif key == 27:
             break
             
-        # 画面の再描画
         scroll_top_row = draw_menu(stdscr, dirs, current_selection, scroll_top_row)
         
-    # 終了時に確定したパスがあれば標準出力に書き出す
     return target_path
 
 if __name__ == "__main__":
-    # cursesの初期化と後処理を自動で包んでくれる wrapper を使用
     selected_path = curses.wrapper(main)
-    
     if selected_path:
         print(selected_path)
