@@ -13,11 +13,23 @@ Windows のコンソール画面でディレクトリの移動をカーソルの
 
 ## 導入方法(Setup)
 
+２つの言語に対応します。  
+Visual Studio もしくは、Python の環境導入は別途行って下さい。 
+
+### C言語
 ソースファイルとバッチファイルは、UTF-8 では無く、Shift-JIS(ANSI) で保存します。  
 Visual Studio でコンパイルを行う。  
 cl chds.c  
 
 chd.bat、chds.exe をパスの通ったディレクトリに置く。  
+
+### Python
+ライブラリの導入  
+pip install windows-curses
+
+chds.py は UTF-8 で保存。
+バッチファイルは、UTF-8 では無く、Shift-JIS(ANSI) で保存します。  
+chd.bat、chds.py をパスの通ったディレクトリに置く。  
 
 ## 操作方法(Usage)
 
