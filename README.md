@@ -13,8 +13,8 @@ Windows のコンソール画面でディレクトリの移動をカーソルの
 
 ## 導入方法(Setup)
 
+ソースファイルとバッチファイルは、UTF-8 では無く、Shift-JIS(ANSI) で保存します。
 Visual Studio でコンパイルを行う。
-
 cl chds.c
 
 chd.bat、chds.exe をパスの通ったディレクトリに置く。
